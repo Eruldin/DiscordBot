@@ -102,7 +102,7 @@ class Database:
     async def list_strikes(self, guild_id: int, user_id: int) -> list[dict]:
         async with self.conn.execute(
             "SELECT id, moderator_id, reason, created_at FROM strikes "
-            "WHERE guild_id = ? AND user_id = ? ORDER BY created_at DESC",
+            "WHERE guild_id = ? AND user_id = ? ORDER BY id DESC",
             (guild_id, user_id),
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
@@ -128,7 +128,7 @@ class Database:
     async def latest_backup(self, guild_id: int) -> Optional[dict]:
         async with self.conn.execute(
             "SELECT id, snapshot, created_at FROM layout_backups "
-            "WHERE guild_id = ? ORDER BY created_at DESC LIMIT 1",
+            "WHERE guild_id = ? ORDER BY id DESC LIMIT 1",
             (guild_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -143,7 +143,7 @@ class Database:
     async def list_backups(self, guild_id: int, limit: int = 10) -> list[dict]:
         async with self.conn.execute(
             "SELECT id, created_at FROM layout_backups WHERE guild_id = ? "
-            "ORDER BY created_at DESC LIMIT ?",
+            "ORDER BY id DESC LIMIT ?",
             (guild_id, limit),
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]

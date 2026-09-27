@@ -39,3 +39,30 @@ async def test_layout_backups(db):
 
     backups = await db.list_backups(1)
     assert [b["id"] for b in backups] == [second, first]
+
+
+async def test_ordering_with_identical_timestamps(db):
+    """Windows' ~15.6ms time.time() granularity ties back-to-back inserts;
+    newest-first must hold even when created_at collides."""
+    fixed_ts = 1700000000.0
+    for reason in ("older", "newer"):
+        await db.conn.execute(
+            "INSERT INTO strikes (guild_id, user_id, moderator_id, reason, created_at) "
+            "VALUES (1, 100, 200, ?, ?)",
+            (reason, fixed_ts),
+        )
+    await db.conn.commit()
+    strikes = await db.list_strikes(1, 100)
+    assert [s["reason"] for s in strikes] == ["newer", "older"]
+
+    for name in ("older", "newer"):
+        await db.conn.execute(
+            "INSERT INTO layout_backups (guild_id, snapshot, created_at) "
+            "VALUES (1, ?, ?)",
+            (f'{{"name": "{name}"}}', fixed_ts),
+        )
+    await db.conn.commit()
+    latest = await db.latest_backup(1)
+    assert latest["snapshot"]["name"] == "newer"
+    backups = await db.list_backups(1)
+    assert [b["id"] for b in backups[:2]] == [2, 1]  # higher id = newer row
