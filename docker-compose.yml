@@ -1,0 +1,10 @@
+services:
+  guildmaster:
+    build: .
+    env_file: .env
+    volumes:
+      - guildmaster-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  guildmaster-data:
