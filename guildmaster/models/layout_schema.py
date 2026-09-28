@@ -82,3 +82,56 @@ class ServerLayout(BaseModel):
 
     def channel_count(self) -> int:
         return sum(len(c.channels) for c in self.categories)
+
+
+class EditOperation(BaseModel):
+    """One targeted change to the existing layout. Operations run in order."""
+    action: Literal[
+        "create_category", "rename_category", "delete_category",
+        "create_channel", "rename_channel", "move_channel",
+        "update_channel", "delete_channel",
+    ]
+    # selectors — match existing objects by their CURRENT names
+    category_name: Optional[str] = Field(
+        default=None,
+        description="Target category for create/rename/delete_category, or the "
+        "category containing channel_name, or the parent for create_channel.",
+    )
+    channel_name: Optional[str] = Field(
+        default=None, description="Current name of the channel to act on."
+    )
+    # mutation params
+    new_name: Optional[str] = None
+    move_to_category: Optional[str] = Field(
+        default=None,
+        description="Target category name for move_channel; empty string moves "
+        "the channel out of all categories (top level).",
+    )
+    topic: Optional[str] = None
+    slowmode: Optional[int] = None
+    nsfw: Optional[bool] = None
+    make_private_for: Optional[List[str]] = Field(
+        default=None,
+        description="Role names that keep view access; everyone else loses it.",
+    )
+    make_public: Optional[bool] = Field(
+        default=None, description="True removes the @everyone view restriction."
+    )
+    channel: Optional[ChannelDefinition] = Field(
+        default=None, description="Definition for create_channel."
+    )
+    channels: List[ChannelDefinition] = Field(
+        default_factory=list, description="Channels to create inside create_category."
+    )
+    delete_children: bool = Field(
+        default=False,
+        description="delete_category: also delete the channels inside it. When "
+        "false the category is only removed if it is (or becomes) empty.",
+    )
+
+
+class LayoutEdit(BaseModel):
+    """A targeted edit plan derived from the guild's current layout."""
+    summary: str
+    roles: List[RoleDefinition] = Field(default_factory=list)
+    operations: List[EditOperation] = Field(default_factory=list)

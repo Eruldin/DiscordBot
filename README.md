@@ -14,6 +14,7 @@ AI-powered Discord server architect & master moderation bot. Describe a communit
 |---|---|
 | `/scaffold prompt:<text> [wipe_existing]` | Generates a server layout from a prompt and builds it: roles, categories, text/voice/stage/forum channels, topics, slowmode, NSFW flags, role-gated visibility. Saves a backup first; posts a live progress embed. |
 | `/layout-backup` | Snapshots the current channel tree into the database. |
+| `/layout-edit prompt:<text>` | Targeted edits to the existing layout from a prompt: rename/move/delete/update channels and categories, create new ones, change slowmode/topics/privacy. The LLM sees the current channel tree and emits ordered operations. Saves a backup first. |
 | `/layout-rollback` | Restores the most recent backup: deletes channels not in it, recreates missing ones. |
 
 Prompt example: *"Dark fantasy RPG community with lore archives, tavern voice chats, role-gated admin chambers, and announcement boards."*
@@ -44,7 +45,7 @@ Prompt example: *"Dark fantasy RPG community with lore archives, tavern voice ch
 GuildMaster also serves a single-page control panel (FastAPI + uvicorn on the bot's own event loop). Open `http://<host>:<PANEL_PORT>/` and sign in with `PANEL_TOKEN` — or without a token when bound to localhost.
 
 - **Overview** — bot status/latency, server stats, pick the audit-log channel.
-- **AI Scaffold** — write a prompt → preview the generated plan → apply (with optional wipe), watching a live progress bar. Same engine as `/scaffold`, backup included.
+- **AI Scaffold** — write a prompt → preview the generated plan → apply (with optional wipe), watching a live progress bar. Same engine as `/scaffold`, backup included. A second card does **prompt-driven targeted edits** (`/layout-edit` engine): "rename #genel to #chat and move it under Community" → preview the ops → apply.
 - **Channels** — create text/voice/forum/category, delete, lock/unlock, slowmode, purge.
 - **Moderation** — member list with strike counts; timeout/untimeout/warn/kick/ban.
 - **Backups** — snapshot the layout on demand, rollback to the latest backup (job progress shown live).

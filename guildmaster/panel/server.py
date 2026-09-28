@@ -17,9 +17,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from guildmaster.cogs.scaffolding import capture_layout
+from guildmaster.cogs.scaffolding import capture_layout, describe_layout_for_llm
 from guildmaster.core.llm_parser import LayoutGenerationError, create_layout_generator
-from guildmaster.models.layout_schema import ServerLayout, sanitize_channel_name
+from guildmaster.models.layout_schema import (
+    LayoutEdit,
+    ServerLayout,
+    sanitize_channel_name,
+)
 from guildmaster.utils.duration import format_timedelta, parse_duration
 
 log = logging.getLogger(__name__)
@@ -37,6 +41,10 @@ class PreviewBody(BaseModel):
 class ApplyBody(BaseModel):
     layout: dict
     wipe_existing: bool = False
+
+
+class EditApplyBody(BaseModel):
+    edit: dict
 
 
 class ChannelCreateBody(BaseModel):
@@ -282,6 +290,60 @@ def create_app(bot: Any, layout_gen: Optional[Any] = None) -> FastAPI:
         if job is None:
             raise HTTPException(404, "Unknown job")
         return job
+
+    # ---- layout edit (targeted prompt-driven changes) ----
+
+    @app.post("/api/guilds/{gid}/edit/preview")
+    async def edit_preview(gid: int, body: PreviewBody, _: Any = Depends(auth)) -> dict:
+        guild = guild_or_404(gid)
+        try:
+            edit = await layout_generator().generate_edit(
+                body.prompt, describe_layout_for_llm(guild)
+            )
+        except LayoutGenerationError as exc:
+            raise HTTPException(502, f"Edit plan generation failed: {exc}")
+        return edit.model_dump()
+
+    @app.post("/api/guilds/{gid}/edit/apply")
+    async def edit_apply(gid: int, body: EditApplyBody, _: Any = Depends(auth)) -> dict:
+        guild = guild_or_404(gid)
+        perms = guild.me.guild_permissions
+        if not perms.manage_channels:
+            raise HTTPException(403, "Bot needs Manage Channels")
+        edit = LayoutEdit.model_validate(body.edit)
+        if not edit.operations and not edit.roles:
+            raise HTTPException(400, "Edit plan has no operations")
+        job_id = uuid.uuid4().hex[:12]
+        job = jobs[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "phase": "starting",
+            "done": 0,
+            "total": 0,
+            "current": "",
+            "created": [],
+            "errors": [],
+            "backup_id": None,
+        }
+
+        async def run() -> None:
+            try:
+                backup_id = await bot.db.save_layout_backup(gid, capture_layout(guild))
+                job["backup_id"] = backup_id
+                cog = bot.get_cog("Scaffolding")
+
+                async def progress(title: str, op: Any, done: int, total: int) -> None:
+                    job.update(phase=title, done=done, total=total, current=op.label)
+
+                applied, errors = await cog.execute_edit(guild, edit, progress=progress)
+                job.update(created=applied, errors=errors, status="done")
+            except Exception as exc:
+                log.exception("edit job %s failed", job_id)
+                job.update(status="error")
+                job["errors"].append(str(exc))
+
+        asyncio.get_running_loop().create_task(run())
+        return {"job_id": job_id, "backup": "pre-apply snapshot is taken inside the job"}
 
     # ---- channel ops ----
 
