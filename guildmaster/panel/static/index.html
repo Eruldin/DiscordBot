@@ -107,6 +107,17 @@
       </div>
       <pre class="plan" id="scaffold-plan" style="display:none"></pre>
     </div>
+    <div class="card">
+      <h3>Prompt → edit existing layout</h3>
+      <div class="muted">Targeted changes on current channels: rename, move, delete, create, slowmode, privacy.</div>
+      <textarea id="edit-prompt" placeholder="e.g. rename #genel to #chat and move it under Community, delete #old-lobby, make #duyuru read-only for everyone"></textarea>
+      <div class="row">
+        <span class="grow"></span>
+        <button onclick="previewEdit()" id="btn-edit-preview">Generate edit plan</button>
+        <button onclick="applyEdit()" id="btn-edit-apply" class="danger" disabled>Apply edits</button>
+      </div>
+      <pre class="plan" id="edit-plan" style="display:none"></pre>
+    </div>
     <div class="card" id="scaffold-job-card" style="display:none">
       <h3>Job <span id="job-id" class="mono"></span></h3>
       <progress id="job-progress" max="1" value="0"></progress>
@@ -280,6 +291,43 @@ async function applyScaffold() {
   const card = document.getElementById('scaffold-job-card'); card.style.display = 'block';
   try {
     const { job_id } = await api(`/api/guilds/${GUILD_ID}/scaffold/apply`, { method: 'POST', body: JSON.stringify({ layout: previewedLayout, wipe_existing: document.getElementById('scaffold-wipe').checked }) });
+    document.getElementById('job-id').textContent = job_id;
+    pollJob(job_id);
+  } catch (e) { toast(e.message, true); }
+}
+let previewedEdit = null;
+function describeEditOp(o) {
+  switch (o.action) {
+    case 'create_category': return `create category ${o.category_name || o.new_name}` + (o.channels && o.channels.length ? ` (${o.channels.length} ch)` : '');
+    case 'rename_category': return `rename category ${o.category_name} → ${o.new_name}`;
+    case 'delete_category': return `delete category ${o.category_name}${o.delete_children ? ' (+children)' : ''}`;
+    case 'create_channel': return `create #${o.channel ? o.channel.name : o.channel_name}${o.category_name ? ' under ' + o.category_name : ''}`;
+    case 'rename_channel': return `rename #${o.channel_name} → #${o.new_name}`;
+    case 'move_channel': return `move #${o.channel_name} → ${o.move_to_category || 'top level'}`;
+    case 'update_channel': return `update #${o.channel_name}`;
+    case 'delete_channel': return `delete #${o.channel_name}`;
+    default: return o.action;
+  }
+}
+async function previewEdit() {
+  const prompt = document.getElementById('edit-prompt').value.trim();
+  if (!prompt) return toast('prompt required', true);
+  const btn = document.getElementById('btn-edit-preview'); btn.disabled = true; btn.textContent = 'Generating…';
+  try {
+    previewedEdit = await api(`/api/guilds/${GUILD_ID}/edit/preview`, { method: 'POST', body: JSON.stringify({ prompt }) });
+    const el = document.getElementById('edit-plan');
+    el.style.display = 'block';
+    el.textContent = previewedEdit.summary + '\n\n' + previewedEdit.operations.map(o => '• ' + describeEditOp(o)).join('\n');
+    document.getElementById('btn-edit-apply').disabled = previewedEdit.operations.length === 0;
+    toast('edit plan generated — review and apply');
+  } catch (e) { toast(e.message, true); } finally { btn.disabled = false; btn.textContent = 'Generate edit plan'; }
+}
+async function applyEdit() {
+  if (!previewedEdit) return;
+  if (!confirm(`Apply ${previewedEdit.operations.length} operation(s) to the server? A backup is taken first.`)) return;
+  const card = document.getElementById('scaffold-job-card'); card.style.display = 'block';
+  try {
+    const { job_id } = await api(`/api/guilds/${GUILD_ID}/edit/apply`, { method: 'POST', body: JSON.stringify({ edit: previewedEdit }) });
     document.getElementById('job-id').textContent = job_id;
     pollJob(job_id);
   } catch (e) { toast(e.message, true); }

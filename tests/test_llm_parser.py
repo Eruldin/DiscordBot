@@ -9,7 +9,7 @@ from guildmaster.core.llm_parser import (
     LayoutGenerator,
     create_layout_generator,
 )
-from guildmaster.models.layout_schema import ServerLayout
+from guildmaster.models.layout_schema import LayoutEdit, ServerLayout
 
 
 def _response(parsed, finish_reason="stop"):
@@ -159,3 +159,52 @@ def test_factory_gemini_requires_key():
 def test_factory_openai_requires_key():
     with pytest.raises(LayoutGenerationError):
         create_layout_generator(_settings(openai_api_key=None))
+
+
+# ---- generate_edit ----
+
+VALID_EDIT = LayoutEdit(
+    summary="rename it",
+    operations=[{"action": "rename_channel", "channel_name": "old", "new_name": "new"}],
+)
+
+
+def _edit_response(parsed):
+    return _response(parsed)
+
+
+async def test_generate_edit_returns_plan():
+    parse = AsyncMock(return_value=_edit_response(VALID_EDIT))
+    gen = LayoutGenerator(_client(parse), model="m")
+    edit = await gen.generate_edit("rename old to new", '{"categories":[]}')
+    assert edit is VALID_EDIT
+    kwargs = parse.await_args.kwargs
+    assert kwargs["response_format"] is LayoutEdit
+    user_msg = kwargs["messages"][1]["content"]
+    assert "CHANGE REQUEST: rename old to new" in user_msg
+    assert "CURRENT LAYOUT" in user_msg
+
+
+async def test_generate_edit_accepts_empty_ops():
+    empty = LayoutEdit(summary="nothing to do", operations=[])
+    parse = AsyncMock(return_value=_edit_response(empty))
+    gen = LayoutGenerator(_client(parse), model="m")
+    assert await gen.generate_edit("x", "{}") is empty
+
+
+async def test_generate_edit_raises_after_retries():
+    parse = AsyncMock(return_value=_edit_response(None))
+    gen = LayoutGenerator(_client(parse), model="m", max_attempts=2)
+    with pytest.raises(LayoutGenerationError):
+        await gen.generate_edit("x", "{}")
+    assert parse.await_count == 2
+
+
+async def test_gemini_generate_edit():
+    call = AsyncMock(return_value=SimpleNamespace(parsed=VALID_EDIT))
+    gen = _gemini_gen(call)
+    edit = await gen.generate_edit("do it", '{"categories":[]}')
+    assert edit is VALID_EDIT
+    contents = call.await_args.kwargs["contents"]
+    assert "CHANGE REQUEST: do it" in contents
+    assert "CURRENT LAYOUT" in contents

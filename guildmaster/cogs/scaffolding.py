@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any, Optional
@@ -15,7 +16,12 @@ from guildmaster.core.llm_parser import (
     LayoutGenerator,
     create_layout_generator,
 )
-from guildmaster.models.layout_schema import ChannelDefinition
+from guildmaster.models.layout_schema import (
+    ChannelDefinition,
+    EditOperation,
+    LayoutEdit,
+    sanitize_channel_name,
+)
 from guildmaster.utils.rate_limit import ChannelOpQueue, QueuedOp
 
 log = logging.getLogger(__name__)
@@ -84,6 +90,112 @@ def capture_layout(guild: discord.Guild) -> dict:
                 }
             )
     return snapshot
+
+
+def describe_layout_for_llm(guild: discord.Guild) -> str:
+    """Compact JSON of the current channel tree for the LLM's context.
+
+    Permission overwrites are reduced to role names — raw bitfields are
+    noise to the model.
+    """
+    def _channel_summary(ch: discord.abc.GuildChannel) -> dict:
+        allowed = [
+            e["target_name"]
+            for e in serialize_overwrites(ch)
+            if e["allow"] & discord.Permissions.view_channel.flag
+        ]
+        hidden = any(
+            e["target_type"] == "role" and e["target_name"] == "@everyone"
+            and e["deny"] & discord.Permissions.view_channel.flag
+            for e in serialize_overwrites(ch)
+        )
+        return {
+            "name": ch.name,
+            "type": _CHANNEL_TYPE_NAMES.get(ch.type, "text"),
+            "topic": getattr(ch, "topic", None),
+            "slowmode": getattr(ch, "slowmode_delay", 0),
+            "nsfw": getattr(ch, "nsfw", False),
+            "hidden_from_everyone": hidden,
+            "visible_to": allowed,
+        }
+
+    snapshot = {
+        "guild": guild.name,
+        "categories": [
+            {
+                "name": cat.name,
+                "channels": [_channel_summary(ch) for ch in cat.channels],
+            }
+            for cat in guild.categories
+        ],
+        "uncategorized": [
+            _channel_summary(ch)
+            for ch in guild.channels
+            if ch.category is None and not isinstance(ch, discord.CategoryChannel)
+        ],
+    }
+    return json.dumps(snapshot, ensure_ascii=False)
+
+
+def find_category(guild: discord.Guild, name: str) -> Optional[discord.CategoryChannel]:
+    lowered = name.strip().lower()
+    for cat in guild.categories:
+        if cat.name.lower() == lowered:
+            return cat
+    return None
+
+
+def find_channel(
+    guild: discord.Guild, name: str, category_name: Optional[str] = None
+) -> Optional[discord.abc.GuildChannel]:
+    lowered = name.strip().lower()
+    matches = [
+        c
+        for c in guild.channels
+        if not isinstance(c, discord.CategoryChannel) and c.name.lower() == lowered
+    ]
+    if category_name:
+        cat_lower = category_name.strip().lower()
+        for c in matches:
+            if c.category is not None and c.category.name.lower() == cat_lower:
+                return c
+    return matches[0] if matches else None
+
+
+def _describe_op(e: EditOperation) -> str:
+    """One-line human-readable description of an EditOperation."""
+    if e.action == "create_category":
+        inner = f" with {len(e.channels)} channel(s)" if e.channels else ""
+        return f"create category **{e.category_name or e.new_name}**{inner}"
+    if e.action == "rename_category":
+        return f"rename category **{e.category_name}** → **{e.new_name}**"
+    if e.action == "delete_category":
+        return f"delete category **{e.category_name}**{' (+children)' if e.delete_children else ''}"
+    if e.action == "create_channel":
+        where = f" under **{e.category_name}**" if e.category_name else ""
+        return f"create `#{(e.channel.name if e.channel else e.channel_name)}`{where}"
+    if e.action == "rename_channel":
+        return f"rename `#{e.channel_name}` → `#{e.new_name}`"
+    if e.action == "move_channel":
+        return f"move `#{e.channel_name}` → **{e.move_to_category or 'top level'}**"
+    if e.action == "update_channel":
+        bits = []
+        if e.new_name:
+            bits.append(f"name→`#{e.new_name}`")
+        if e.topic is not None:
+            bits.append("topic")
+        if e.slowmode is not None:
+            bits.append(f"slowmode={e.slowmode}s")
+        if e.nsfw is not None:
+            bits.append(f"nsfw={e.nsfw}")
+        if e.make_private_for is not None:
+            bits.append("private→" + ",".join(e.make_private_for))
+        if e.make_public:
+            bits.append("public")
+        return f"update `#{e.channel_name}` ({', '.join(bits) or 'no-op'})"
+    if e.action == "delete_channel":
+        return f"delete `#{e.channel_name}`"
+    return e.action
 
 
 def find_role(guild: discord.Guild, name: str) -> Optional[discord.Role]:
@@ -338,6 +450,105 @@ class Scaffolding(commands.Cog):
             },
         )
 
+    # ---- /layout-edit: targeted edits to the existing layout ----
+
+    @app_commands.command(
+        name="layout-edit",
+        description="Edit existing channels/categories from a natural-language request",
+    )
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        prompt="What to change, e.g. 'rename #genel to #chat, move it under Community, delete #old'"
+    )
+    async def layout_edit(
+        self,
+        interaction: discord.Interaction,
+        prompt: str,
+    ) -> None:
+        guild = interaction.guild
+        perms = guild.me.guild_permissions
+        if not perms.manage_channels:
+            await interaction.response.send_message(
+                "I need **Manage Channels** (and **Manage Roles** for new roles/gating).",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(thinking=True)
+        try:
+            edit = await self.layout_gen.generate_edit(
+                prompt, describe_layout_for_llm(guild)
+            )
+        except LayoutGenerationError as exc:
+            await interaction.followup.send(f"❌ Couldn't plan the edit: {exc}")
+            return
+
+        if not edit.operations and not edit.roles:
+            await interaction.followup.send(f"ℹ️ {edit.summary} — nothing to change.")
+            return
+
+        snapshot = capture_layout(guild)
+        backup_id = await self.bot.db.save_layout_backup(guild.id, snapshot)
+
+        op_lines = [f"• {_describe_op(o)}" for o in edit.operations][:18]
+        plan = discord.Embed(
+            title="Planned layout edits",
+            description=edit.summary[:400] + "\n\n" + "\n".join(op_lines),
+            color=discord.Color.blurple(),
+        )
+        plan.set_footer(text=f"Backup #{backup_id} saved — /layout-rollback restores it")
+        progress_msg = await interaction.followup.send(embed=plan)
+
+        protected = self._protected_channel_ids(guild, interaction.channel_id)
+        last_edit = 0.0
+
+        async def progress(title: str, op: QueuedOp, done: int, total: int) -> None:
+            nonlocal last_edit
+            if time.monotonic() - last_edit < 1.0 and done < total:
+                return
+            last_edit = time.monotonic()
+            status = "✅" if op.error is None else "❌"
+            embed = discord.Embed(
+                title=title,
+                description=f"[{done}/{total}] {status} {op.label}",
+                color=discord.Color.blurple(),
+            )
+            try:
+                await progress_msg.edit(embed=embed)
+            except discord.HTTPException:
+                pass
+
+        applied, errors = await self.execute_edit(
+            guild, edit, protected_ids=protected, progress=progress
+        )
+
+        color = discord.Color.green() if not errors else discord.Color.orange()
+        done = discord.Embed(
+            title="Edit complete" if not errors else "Edit complete (with errors)",
+            color=color,
+            description=(
+                f"**{edit.summary[:300]}**\n\n"
+                f"Applied {len(applied)} operation(s). "
+                + (f"{len(errors)} failed:\n" + "\n".join(f"• {e}" for e in errors[:10]) if errors else "")
+            ),
+        )
+        done.set_footer(text=f"Not happy? /layout-rollback restores backup #{backup_id}")
+        try:
+            await progress_msg.edit(embed=done)
+        except discord.HTTPException:
+            await interaction.followup.send(embed=done)
+        await self._log(
+            guild,
+            title="Layout edited",
+            color=color,
+            fields={
+                "Moderator": str(interaction.user),
+                "Operations applied": str(len(applied)),
+                "Errors": str(len(errors)),
+                "Backup": f"#{backup_id}",
+            },
+        )
+
     # ---- execution engine (shared by /scaffold and the web panel) ----
 
     async def execute_layout(
@@ -527,6 +738,202 @@ class Scaffolding(commands.Cog):
                 ops.append(QueuedOp(label=f"Create `#{ch_snap['name']}`", factory=make_ch))
 
         return await self._run_queue(ops, "Restoring layout", progress)
+
+    async def execute_edit(
+        self,
+        guild: discord.Guild,
+        edit: LayoutEdit,
+        *,
+        protected_ids: Optional[set] = None,
+        progress=None,
+    ) -> tuple[list[str], list[str]]:
+        """Apply a LayoutEdit's ordered operations to the guild.
+
+        Lookups happen inside each queued op so the LLM's ordering is
+        honored (e.g. create_category before moving channels into it,
+        delete before reusing a name). Returns (applied_labels, errors).
+        """
+        protected = set(protected_ids or set())
+        log_channel_id = await self.bot.db.get_setting(guild.id, "log_channel_id")
+        if log_channel_id:
+            protected.add(int(log_channel_id))
+        ops: list[QueuedOp] = []
+
+        def _resolve_channel(e: EditOperation):
+            ch = find_channel(guild, e.channel_name or "", e.category_name)
+            if ch is None:
+                raise RuntimeError(f"channel '#{e.channel_name}' not found")
+            if ch.id in protected:
+                raise RuntimeError(f"refusing to touch protected channel #{ch.name}")
+            return ch
+
+        def _resolve_category(e: EditOperation):
+            cat = find_category(guild, e.category_name or "")
+            if cat is None:
+                raise RuntimeError(f"category '{e.category_name}' not found")
+            if cat.id in protected:
+                raise RuntimeError(f"refusing to touch protected category '{cat.name}'")
+            return cat
+
+        # Missing roles referenced by the plan are created first.
+        for rdef in edit.roles:
+            if find_role(guild, rdef.name) is None:
+                kwargs: dict[str, Any] = {
+                    "name": rdef.name,
+                    "hoist": rdef.hoist,
+                    "mentionable": rdef.mentionable,
+                }
+                if rdef.color:
+                    kwargs["colour"] = discord.Colour(int(rdef.color.lstrip("#"), 16))
+                ops.append(
+                    QueuedOp(
+                        label=f"Create role `@{rdef.name}`",
+                        factory=lambda k=kwargs: guild.create_role(reason="GuildMaster edit", **k),
+                    )
+                )
+
+        for e in edit.operations:
+            if e.action == "create_category":
+                cat_name = e.category_name or e.new_name or "New Category"
+                holder: dict[str, Any] = {}
+
+                async def make_cat(n=cat_name, h=holder):
+                    h["channel"] = await guild.create_category(n, reason="GuildMaster edit")
+                    return h["channel"]
+
+                ops.append(QueuedOp(label=f"Create category **{cat_name}**", factory=make_cat))
+                for cdef in e.channels:
+
+                    async def make_ch(cd=cdef, h=holder):
+                        cat = h.get("channel")
+                        if cat is None:
+                            raise RuntimeError("parent category failed to create")
+                        return await self._create_channel_factory(guild, cd, cat)()
+
+                    ops.append(QueuedOp(label=f"Create `#{cdef.name}`", factory=make_ch))
+
+            elif e.action == "rename_category":
+
+                async def rename_cat(e=e):
+                    cat = _resolve_category(e)
+                    return await cat.edit(name=e.new_name or cat.name, reason="GuildMaster edit")
+
+                ops.append(
+                    QueuedOp(
+                        label=f"Rename category '{e.category_name}' → **{e.new_name}**",
+                        factory=rename_cat,
+                    )
+                )
+
+            elif e.action == "delete_category":
+
+                async def delete_cat(e=e):
+                    cat = _resolve_category(e)
+                    if e.delete_children:
+                        for ch in list(cat.channels):
+                            if ch.id in protected:
+                                raise RuntimeError(
+                                    f"category '{cat.name}' contains protected #{ch.name}"
+                                )
+                        for ch in list(cat.channels):
+                            await ch.delete(reason="GuildMaster edit")
+                    return await cat.delete(reason="GuildMaster edit")
+
+                ops.append(
+                    QueuedOp(label=f"Delete category '{e.category_name}'", factory=delete_cat)
+                )
+
+            elif e.action == "create_channel":
+                cdef = e.channel or ChannelDefinition(name=e.channel_name or e.new_name or "channel")
+
+                async def create_ch(cd=cdef, e=e):
+                    cat = find_category(guild, e.category_name) if e.category_name else None
+                    if e.category_name and cat is None:
+                        raise RuntimeError(f"category '{e.category_name}' not found")
+                    return await self._create_channel_factory(guild, cd, cat)()
+
+                ops.append(QueuedOp(label=f"Create `#{cdef.name}`", factory=create_ch))
+
+            elif e.action == "rename_channel":
+
+                async def rename_ch(e=e):
+                    ch = _resolve_channel(e)
+                    return await ch.edit(
+                        name=sanitize_channel_name(e.new_name or ch.name),
+                        reason="GuildMaster edit",
+                    )
+
+                ops.append(
+                    QueuedOp(
+                        label=f"Rename `#{e.channel_name}` → `#{e.new_name}`",
+                        factory=rename_ch,
+                    )
+                )
+
+            elif e.action == "move_channel":
+
+                async def move_ch(e=e):
+                    ch = _resolve_channel(e)
+                    target = (e.move_to_category or "").strip()
+                    if not target:
+                        return await ch.move(beginning=True, category=None, reason="GuildMaster edit")
+                    cat = find_category(guild, target)
+                    if cat is None:
+                        raise RuntimeError(f"target category '{target}' not found")
+                    return await ch.move(end=True, category=cat, reason="GuildMaster edit")
+
+                ops.append(
+                    QueuedOp(
+                        label=f"Move `#{e.channel_name}` → **{e.move_to_category or 'top level'}**",
+                        factory=move_ch,
+                    )
+                )
+
+            elif e.action == "update_channel":
+
+                async def update_ch(e=e):
+                    ch = _resolve_channel(e)
+                    kwargs: dict[str, Any] = {}
+                    if e.new_name:
+                        kwargs["name"] = sanitize_channel_name(e.new_name)
+                    if e.topic is not None and isinstance(
+                        ch, (discord.TextChannel, discord.ForumChannel)
+                    ):
+                        kwargs["topic"] = e.topic
+                    if e.slowmode is not None and hasattr(ch, "slowmode_delay"):
+                        kwargs["slowmode_delay"] = max(0, e.slowmode)
+                    if e.nsfw is not None:
+                        kwargs["nsfw"] = e.nsfw
+                    if kwargs:
+                        await ch.edit(reason="GuildMaster edit", **kwargs)
+                    if e.make_private_for is not None:
+                        await ch.set_permissions(guild.default_role, view_channel=False)
+                        for name in e.make_private_for:
+                            role = find_role(guild, name)
+                            if role is not None:
+                                await ch.set_permissions(role, view_channel=True)
+                    if e.make_public:
+                        await ch.set_permissions(guild.default_role, overwrite=None)
+                    return ch
+
+                ops.append(QueuedOp(label=f"Update `#{e.channel_name}`", factory=update_ch))
+
+            elif e.action == "delete_channel":
+
+                async def delete_ch(e=e):
+                    ch = _resolve_channel(e)
+                    return await ch.delete(reason="GuildMaster edit")
+
+                ops.append(QueuedOp(label=f"Delete `#{e.channel_name}`", factory=delete_ch))
+
+        results = await self._run_queue(ops, "Applying layout edits", progress)
+        applied, errors = [], []
+        for op in results:
+            if op.error:
+                errors.append(f"{op.label}: {op.error}")
+            else:
+                applied.append(op.label)
+        return applied, errors
 
     # ---- backups ----
 
