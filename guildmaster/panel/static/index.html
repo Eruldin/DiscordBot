@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GuildMaster Panel</title>
+<style>
+  :root {
+    --bg: #1e1f22; --bg2: #2b2d31; --bg3: #313338; --fg: #dbdee1;
+    --muted: #949ba4; --accent: #5865f2; --accent2: #4752c4;
+    --danger: #da373c; --ok: #248046; --warn: #f0b232;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: var(--bg2); border-bottom: 1px solid #1a1b1e; position: sticky; top: 0; z-index: 10; }
+  header h1 { font-size: 18px; margin: 0; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: var(--ok); }
+  #bot-status { color: var(--muted); }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px 20px 60px; }
+  select, input, textarea { background: var(--bg); color: var(--fg); border: 1px solid #1a1b1e; border-radius: 4px; padding: 7px 10px; font: inherit; }
+  textarea { width: 100%; min-height: 80px; resize: vertical; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 4px; padding: 7px 14px; font: inherit; cursor: pointer; }
+  button:hover { background: var(--accent2); }
+  button.ghost { background: var(--bg3); color: var(--fg); }
+  button.danger { background: var(--danger); }
+  button.small { padding: 3px 8px; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  nav.tabs { display: flex; gap: 4px; margin: 14px 0; flex-wrap: wrap; }
+  nav.tabs button { background: var(--bg3); color: var(--muted); border-radius: 4px 4px 0 0; }
+  nav.tabs button.active { background: var(--bg2); color: var(--fg); }
+  .card { background: var(--bg2); border: 1px solid #1a1b1e; border-radius: 8px; padding: 16px; margin-bottom: 14px; }
+  .card h3 { margin: 0 0 10px; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  .grow { flex: 1; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #383a40; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  .pill { display: inline-block; background: var(--bg3); border-radius: 10px; padding: 1px 8px; font-size: 12px; color: var(--muted); }
+  .tree-cat { margin: 10px 0 4px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; font-size: 12px; color: var(--muted); }
+  .tree-ch { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 4px; }
+  .tree-ch:hover { background: var(--bg3); }
+  .tree-ch .actions { margin-left: auto; display: flex; gap: 4px; opacity: 0; }
+  .tree-ch:hover .actions { opacity: 1; }
+  .tree-ch .actions button { opacity: .9; }
+  #login { max-width: 420px; margin: 15vh auto; }
+  .muted { color: var(--muted); }
+  .err { color: var(--danger); }
+  .ok { color: var(--ok); }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .toast { position: fixed; bottom: 16px; right: 16px; background: var(--bg3); border: 1px solid #444; padding: 10px 16px; border-radius: 6px; max-width: 420px; }
+  .toast.err { border-color: var(--danger); }
+  progress { width: 100%; height: 14px; accent-color: var(--accent); }
+  pre.plan { background: var(--bg); padding: 12px; border-radius: 6px; overflow: auto; max-height: 320px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="login" class="card" style="display:none">
+  <h3>GuildMaster Panel — sign in</h3>
+  <p class="muted">Enter the panel token (PANEL_TOKEN in the bot's .env). If the bot runs without one and you're on localhost, just press Enter.</p>
+  <input id="token-input" type="password" placeholder="panel token" style="width:100%">
+  <div class="row" style="margin-top:10px"><button onclick="saveToken()" class="grow">Connect</button></div>
+  <div id="login-err" class="err"></div>
+</div>
+
+<div id="app" style="display:none">
+<header>
+  <span id="status-dot" class="dot"></span>
+  <h1>GuildMaster</h1>
+  <span id="bot-status" class="muted">connecting…</span>
+  <span class="grow"></span>
+  <select id="guild-select" onchange="onGuildChange()"></select>
+</header>
+<main>
+  <nav class="tabs">
+    <button data-tab="overview" class="active" onclick="showTab('overview')">Overview</button>
+    <button data-tab="scaffold" onclick="showTab('scaffold')">AI Scaffold</button>
+    <button data-tab="channels" onclick="showTab('channels')">Channels</button>
+    <button data-tab="moderation" onclick="showTab('moderation')">Moderation</button>
+    <button data-tab="backups" onclick="showTab('backups')">Backups</button>
+  </nav>
+
+  <section id="tab-overview" class="tab">
+    <div class="card">
+      <h3>Server</h3>
+      <div id="guild-info" class="row"></div>
+    </div>
+    <div class="card">
+      <h3>Audit log channel</h3>
+      <div class="row">
+        <select id="log-channel-select" class="grow"></select>
+        <button onclick="setLogChannel()">Save</button>
+        <button class="ghost" onclick="setLogChannel(true)">Disable</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-scaffold" class="tab" style="display:none">
+    <div class="card">
+      <h3>Prompt → server layout</h3>
+      <textarea id="scaffold-prompt" placeholder="e.g. Dark fantasy RPG community with lore archives, tavern voice chats, role-gated admin chambers…"></textarea>
+      <div class="row">
+        <label><input type="checkbox" id="scaffold-wipe"> wipe existing channels first</label>
+        <span class="grow"></span>
+        <button onclick="previewScaffold()" id="btn-preview">Generate plan</button>
+        <button onclick="applyScaffold()" id="btn-apply" class="danger" disabled>Apply to server</button>
+      </div>
+      <pre class="plan" id="scaffold-plan" style="display:none"></pre>
+    </div>
+    <div class="card" id="scaffold-job-card" style="display:none">
+      <h3>Job <span id="job-id" class="mono"></span></h3>
+      <progress id="job-progress" max="1" value="0"></progress>
+      <div class="muted" id="job-status">waiting…</div>
+      <div class="err" id="job-errors"></div>
+    </div>
+  </section>
+
+  <section id="tab-channels" class="tab" style="display:none">
+    <div class="card">
+      <h3>Create channel</h3>
+      <div class="row">
+        <input id="new-ch-name" placeholder="channel-name">
+        <select id="new-ch-type"><option value="text">text</option><option value="voice">voice</option><option value="forum">forum</option><option value="category">category</option></select>
+        <select id="new-ch-cat"><option value="">(no category)</option></select>
+        <button onclick="createChannel()">Create</button>
+      </div>
+    </div>
+    <div class="card"><h3>Channel tree</h3><div id="channel-tree"></div></div>
+  </section>
+
+  <section id="tab-moderation" class="tab" style="display:none">
+    <div class="card">
+      <h3>Members</h3>
+      <div class="row"><input id="member-filter" placeholder="filter by name…" oninput="renderMembers()"><button class="ghost" onclick="loadMembers()">Refresh</button></div>
+      <table><thead><tr><th>Member</th><th>Top role</th><th>Acct age</th><th>Strikes</th><th>Actions</th></tr></thead><tbody id="member-rows"></tbody></table>
+    </div>
+  </section>
+
+  <section id="tab-backups" class="tab" style="display:none">
+    <div class="card">
+      <h3>Layout backups</h3>
+      <div class="row">
+        <button onclick="createBackup()">Snapshot now</button>
+        <button class="danger" onclick="rollback()">Rollback to latest</button>
+      </div>
+      <table><thead><tr><th>ID</th><th>Created</th></tr></thead><tbody id="backup-rows"></tbody></table>
+    </div>
+  </section>
+</main>
+</div>
+
+<script>
+let TOKEN = localStorage.getItem('panel_token') || '';
+let GUILD_ID = null, CHANNELS = null, MEMBERS = [];
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({ 'Content-Type': 'application/json', 'X-Panel-Token': TOKEN }, opts.headers);
+  const r = await fetch(path, opts);
+  if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
+  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.detail || r.statusText); }
+  return r.json();
+}
+function toast(msg, err) {
+  const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : '');
+  t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 4000);
+}
+function showLogin() { document.getElementById('login').style.display = 'block'; document.getElementById('app').style.display = 'none'; }
+function saveToken() { TOKEN = document.getElementById('token-input').value.trim(); localStorage.setItem('panel_token', TOKEN); boot(); }
+
+async function boot() {
+  try {
+    const s = await api('/api/status');
+    document.getElementById('login').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    document.getElementById('status-dot').className = 'dot' + (s.online ? ' on' : '');
+    document.getElementById('bot-status').textContent = s.online ? `online as ${s.user} · ${s.latency_ms}ms` : 'bot offline';
+    const gs = await api('/api/guilds');
+    const sel = document.getElementById('guild-select');
+    sel.innerHTML = gs.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('');
+    if (gs.length) { GUILD_ID = GUILD_ID || gs[0].id; sel.value = GUILD_ID; await onGuildChange(); }
+  } catch (e) { document.getElementById('login-err').textContent = e.message; if (e.message !== 'unauthorized') showLogin(); }
+}
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.style.display = 'none');
+  document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.getElementById('tab-' + name).style.display = 'block';
+  if (name === 'channels') loadChannels();
+  if (name === 'moderation') loadMembers();
+  if (name === 'backups') loadBackups();
+}
+async function onGuildChange() {
+  GUILD_ID = document.getElementById('guild-select').value;
+  const gs = await api('/api/guilds'); const g = gs.find(x => x.id === GUILD_ID);
+  document.getElementById('guild-info').innerHTML = g ? `<b>${esc(g.name)}</b> <span class="pill">${g.member_count} members</span> <span class="pill">${g.channels} channels</span> <span class="pill">${g.roles} roles</span>` : '';
+  await loadChannels();
+}
+async function loadChannels() {
+  if (!GUILD_ID) return;
+  CHANNELS = await api(`/api/guilds/${GUILD_ID}/channels`);
+  const tree = document.getElementById('channel-tree');
+  let html = '';
+  for (const cat of CHANNELS.categories) {
+    html += `<div class="tree-cat">▾ ${esc(cat.name)}</div>`;
+    for (const ch of cat.channels) html += chRow(ch);
+  }
+  for (const ch of CHANNELS.uncategorized) html += `<div class="tree-cat">uncategorized</div>` + chRow(ch);
+  tree.innerHTML = html || '<span class="muted">No channels</span>';
+  const catSel = document.getElementById('new-ch-cat');
+  catSel.innerHTML = '<option value="">(no category)</option>' + CHANNELS.categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  const logSel = document.getElementById('log-channel-select');
+  const all = [...CHANNELS.uncategorized, ...CHANNELS.categories.flatMap(c => c.channels)].filter(c => c.type === 'text');
+  logSel.innerHTML = '<option value="">(none)</option>' + all.map(c => `<option value="${c.id}" ${CHANNELS.log_channel_id === c.id ? 'selected' : ''}>#${esc(c.name)}</option>`).join('');
+}
+function chRow(ch) {
+  const icon = ch.type === 'voice' ? '🔊' : ch.type === 'forum' ? '📋' : ch.type === 'stage' ? '🎙' : '#';
+  return `<div class="tree-ch"><span>${icon} ${esc(ch.name)}</span>${ch.slowmode ? `<span class="pill">🐌 ${ch.slowmode}s</span>` : ''}<span class="actions">
+    <button class="small ghost" onclick="lockChannel('${ch.id}',true)">lock</button>
+    <button class="small ghost" onclick="lockChannel('${ch.id}',false)">unlock</button>
+    <button class="small ghost" onclick="setSlowmode('${ch.id}')">slowmode</button>
+    ${ch.type === 'text' ? `<button class="small ghost" onclick="purgeChannel('${ch.id}')">purge</button>` : ''}
+    <button class="small danger" onclick="deleteChannel('${ch.id}','${esc(ch.name)}')">delete</button>
+  </span></div>`;
+}
+async function createChannel() {
+  const name = document.getElementById('new-ch-name').value.trim();
+  if (!name) return toast('name required', true);
+  try {
+    await api(`/api/guilds/${GUILD_ID}/channels`, { method: 'POST', body: JSON.stringify({ name, type: document.getElementById('new-ch-type').value, category_id: document.getElementById('new-ch-cat').value || null }) });
+    toast(`#${name} created`); document.getElementById('new-ch-name').value = ''; loadChannels();
+  } catch (e) { toast(e.message, true); }
+}
+async function deleteChannel(cid, name) {
+  if (!confirm(`Delete #${name}?`)) return;
+  try { await api(`/api/guilds/${GUILD_ID}/channels/${cid}`, { method: 'DELETE' }); toast(`#${name} deleted`); loadChannels(); }
+  catch (e) { toast(e.message, true); }
+}
+async function lockChannel(cid, lock) {
+  try { await api(`/api/guilds/${GUILD_ID}/channels/${cid}/lock?lock=${lock}`, { method: 'POST' }); toast(lock ? 'locked' : 'unlocked'); }
+  catch (e) { toast(e.message, true); }
+}
+async function setSlowmode(cid) {
+  const s = prompt('Slowmode seconds (0 = off):'); if (s === null) return;
+  try { await api(`/api/guilds/${GUILD_ID}/channels/${cid}/slowmode`, { method: 'POST', body: JSON.stringify({ seconds: parseInt(s) || 0 }) }); loadChannels(); }
+  catch (e) { toast(e.message, true); }
+}
+async function purgeChannel(cid) {
+  const n = prompt('Purge how many recent messages?', '50'); if (!n) return;
+  try { const r = await api(`/api/guilds/${GUILD_ID}/channels/${cid}/purge`, { method: 'POST', body: JSON.stringify({ amount: parseInt(n) }) }); toast(`deleted ${r.deleted} messages`); }
+  catch (e) { toast(e.message, true); }
+}
+let previewedLayout = null;
+async function previewScaffold() {
+  const prompt = document.getElementById('scaffold-prompt').value.trim();
+  if (!prompt) return toast('prompt required', true);
+  const btn = document.getElementById('btn-preview'); btn.disabled = true; btn.textContent = 'Generating…';
+  try {
+    previewedLayout = await api(`/api/guilds/${GUILD_ID}/scaffold/preview`, { method: 'POST', body: JSON.stringify({ prompt }) });
+    const el = document.getElementById('scaffold-plan');
+    el.style.display = 'block';
+    el.textContent = previewedLayout.server_summary + '\n\n' + previewedLayout.categories.map(c => `${c.category_name}\n` + c.channels.map(ch => `  ${ch.type === 'voice' ? '🔊' : '#'}${ch.name}${ch.is_restricted || ch.roles_allowed.join() !== '@everyone' ? ' (gated)' : ''}`).join('\n')).join('\n\n');
+    document.getElementById('btn-apply').disabled = false;
+    toast('plan generated — review and apply');
+  } catch (e) { toast(e.message, true); } finally { btn.disabled = false; btn.textContent = 'Generate plan'; }
+}
+async function applyScaffold() {
+  if (!previewedLayout) return;
+  if (document.getElementById('scaffold-wipe').checked && !confirm('This DELETES existing channels (except protected). Continue?')) return;
+  const card = document.getElementById('scaffold-job-card'); card.style.display = 'block';
+  try {
+    const { job_id } = await api(`/api/guilds/${GUILD_ID}/scaffold/apply`, { method: 'POST', body: JSON.stringify({ layout: previewedLayout, wipe_existing: document.getElementById('scaffold-wipe').checked }) });
+    document.getElementById('job-id').textContent = job_id;
+    pollJob(job_id);
+  } catch (e) { toast(e.message, true); }
+}
+async function pollJob(id) {
+  const bar = document.getElementById('job-progress'), st = document.getElementById('job-status'), err = document.getElementById('job-errors');
+  for (;;) {
+    const j = await api(`/api/scaffold/jobs/${id}`);
+    bar.max = j.total || 1; bar.value = j.done;
+    st.textContent = `${j.phase}: ${j.current || ''} — ${j.done}/${j.total} ${j.status}`;
+    if (j.status === 'done' || j.status === 'error') {
+      err.textContent = (j.errors || []).join('\n');
+      st.textContent += j.status === 'done' ? ` ✔ created ${j.created ? j.created.length : 0}` : ' (failed)';
+      loadChannels(); break;
+    }
+    await new Promise(r => setTimeout(r, 1500));
+  }
+}
+async function loadMembers() {
+  if (!GUILD_ID) return;
+  MEMBERS = await api(`/api/guilds/${GUILD_ID}/members?limit=500`);
+  for (const m of MEMBERS) { try { m._strikes = (await api(`/api/guilds/${GUILD_ID}/members/${m.id}/warnings`)).strikes.length; } catch { m._strikes = '?'; } }
+  renderMembers();
+}
+function renderMembers() {
+  const f = (document.getElementById('member-filter').value || '').toLowerCase();
+  const rows = MEMBERS.filter(m => m.name.toLowerCase().includes(f) || m.tag.toLowerCase().includes(f)).slice(0, 100);
+  document.getElementById('member-rows').innerHTML = rows.map(m => `<tr>
+    <td>${esc(m.name)} <span class="muted mono">${esc(m.tag)}</span>${m.bot ? ' 🤖' : ''}${m.timed_out ? ' <span class="pill">timed out</span>' : ''}</td>
+    <td>${esc(m.top_role || '')}</td><td>${m.account_age_days ?? '?'}d</td><td>${m._strikes}</td>
+    <td>
+      <button class="small ghost" onclick="act('${m.id}','timeout',prompt('duration e.g. 10m, 2h, 1d','10m'))">timeout</button>
+      <button class="small ghost" onclick="act('${m.id}','untimeout')">untimeout</button>
+      <button class="small ghost" onclick="act('${m.id}','warn',prompt('warn reason'))">warn</button>
+      <button class="small danger" onclick="act('${m.id}','kick',prompt('reason'))">kick</button>
+      <button class="small danger" onclick="act('${m.id}','ban',prompt('reason'))">ban</button>
+    </td></tr>`).join('');
+}
+async function act(uid, action, arg) {
+  if (arg === null) return;
+  const body = action === 'timeout' ? { duration: arg } : action === 'warn' ? { reason: arg || 'warned' } : { reason: arg || undefined };
+  try { const r = await api(`/api/guilds/${GUILD_ID}/members/${uid}/${action}`, { method: 'POST', body: JSON.stringify(body) }); toast(`${action}: ${r.member || r.kicked || r.banned}` + (r.consequence ? ` — ${r.consequence}` : '')); loadMembers(); }
+  catch (e) { toast(e.message, true); }
+}
+async function setLogChannel(disable) {
+  const cid = disable ? null : (document.getElementById('log-channel-select').value || null);
+  try { await api(`/api/guilds/${GUILD_ID}/settings/log-channel`, { method: 'POST', body: JSON.stringify({ channel_id: cid ? parseInt(cid) : null }) }); toast(disable ? 'logging disabled' : 'log channel set'); }
+  catch (e) { toast(e.message, true); }
+}
+async function loadBackups() {
+  const rows = await api(`/api/guilds/${GUILD_ID}/backups`);
+  document.getElementById('backup-rows').innerHTML = rows.map(b => `<tr><td class="mono">#${b.id}</td><td>${new Date(b.created_at * 1000).toLocaleString()}</td></tr>`).join('') || '<tr><td colspan=2 class="muted">none yet</td></tr>';
+}
+async function createBackup() {
+  try { const r = await api(`/api/guilds/${GUILD_ID}/backups`, { method: 'POST' }); toast(`backup #${r.backup_id} saved`); loadBackups(); }
+  catch (e) { toast(e.message, true); }
+}
+async function rollback() {
+  if (!confirm('Restore the latest backup? Channels not in it get deleted.')) return;
+  try { const { job_id } = await api(`/api/guilds/${GUILD_ID}/backups/rollback`, { method: 'POST' }); toast('rollback started'); document.getElementById('scaffold-job-card').style.display = 'block'; showTab('scaffold'); pollJob(job_id); }
+  catch (e) { toast(e.message, true); }
+}
+boot();
+</script>
+</body>
+</html>

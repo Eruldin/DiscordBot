@@ -63,11 +63,16 @@ class GuildMasterBot(commands.Bot):
         )
         self.settings = settings
         self.db = Database(settings.database_path)
+        self.panel_task: Any = None
 
     async def setup_hook(self) -> None:
         await self.db.connect()
         for ext in COGS:
             await self.load_extension(ext)
+        if self.settings.panel_enabled:
+            from guildmaster.panel.server import start_panel
+
+            await start_panel(self)
         if self.settings.sync_guild_id:
             guild = discord.Object(id=self.settings.sync_guild_id)
             self.tree.copy_global_to(guild=guild)
@@ -81,5 +86,7 @@ class GuildMasterBot(commands.Bot):
         log.info("Logged in as %s (%s)", self.user, self.user and self.user.id)
 
     async def close(self) -> None:
+        if self.panel_task is not None:
+            self.panel_task.cancel()
         await self.db.close()
         await super().close()
