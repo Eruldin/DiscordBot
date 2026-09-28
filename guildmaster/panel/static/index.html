@@ -151,6 +151,14 @@
 
 <script>
 let TOKEN = localStorage.getItem('panel_token') || '';
+// ?token=... in the URL also authenticates (server accepts it); adopt it into
+// localStorage once and strip it from the address bar.
+const urlToken = new URLSearchParams(location.search).get('token');
+if (urlToken) {
+  TOKEN = urlToken;
+  localStorage.setItem('panel_token', TOKEN);
+  history.replaceState(null, '', location.pathname);
+}
 let GUILD_ID = null, CHANNELS = null, MEMBERS = [];
 
 async function api(path, opts = {}) {
@@ -204,7 +212,10 @@ async function loadChannels() {
     html += `<div class="tree-cat">▾ ${esc(cat.name)}</div>`;
     for (const ch of cat.channels) html += chRow(ch);
   }
-  for (const ch of CHANNELS.uncategorized) html += `<div class="tree-cat">uncategorized</div>` + chRow(ch);
+  if (CHANNELS.uncategorized.length) {
+    html += `<div class="tree-cat">uncategorized</div>`;
+    for (const ch of CHANNELS.uncategorized) html += chRow(ch);
+  }
   tree.innerHTML = html || '<span class="muted">No channels</span>';
   const catSel = document.getElementById('new-ch-cat');
   catSel.innerHTML = '<option value="">(no category)</option>' + CHANNELS.categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
@@ -227,7 +238,7 @@ async function createChannel() {
   if (!name) return toast('name required', true);
   try {
     await api(`/api/guilds/${GUILD_ID}/channels`, { method: 'POST', body: JSON.stringify({ name, type: document.getElementById('new-ch-type').value, category_id: document.getElementById('new-ch-cat').value || null }) });
-    toast(`#${name} created`); document.getElementById('new-ch-name').value = ''; loadChannels();
+    toast(`#${name} created`); document.getElementById('new-ch-name').value = ''; document.getElementById('new-ch-type').value = 'text'; loadChannels();
   } catch (e) { toast(e.message, true); }
 }
 async function deleteChannel(cid, name) {
@@ -315,7 +326,7 @@ async function act(uid, action, arg) {
 }
 async function setLogChannel(disable) {
   const cid = disable ? null : (document.getElementById('log-channel-select').value || null);
-  try { await api(`/api/guilds/${GUILD_ID}/settings/log-channel`, { method: 'POST', body: JSON.stringify({ channel_id: cid ? parseInt(cid) : null }) }); toast(disable ? 'logging disabled' : 'log channel set'); }
+  try { await api(`/api/guilds/${GUILD_ID}/settings/log-channel`, { method: 'POST', body: JSON.stringify({ channel_id: cid || null }) }); toast(disable ? 'logging disabled' : 'log channel set'); }
   catch (e) { toast(e.message, true); }
 }
 async function loadBackups() {
