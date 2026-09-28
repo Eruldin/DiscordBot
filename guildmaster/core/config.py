@@ -14,6 +14,10 @@ class Settings:
     database_path: str = "data/guildmaster.db"
     sync_guild_id: Optional[int] = None
     log_level: str = "INFO"
+    panel_enabled: bool = True
+    panel_host: str = "127.0.0.1"
+    panel_port: int = 8080
+    panel_token: Optional[str] = None
 
 
 def _required(name: str) -> str:
@@ -35,4 +39,9 @@ def load_settings() -> Settings:
         or "data/guildmaster.db",
         sync_guild_id=int(guild_id) if guild_id else None,
         log_level=os.environ.get("LOG_LEVEL", "INFO").strip() or "INFO",
+        panel_enabled=os.environ.get("PANEL_ENABLED", "true").strip().lower()
+        not in ("0", "false", "no"),
+        panel_host=os.environ.get("PANEL_HOST", "127.0.0.1").strip() or "127.0.0.1",
+        panel_port=int(os.environ.get("PANEL_PORT", "8080").strip() or "8080"),
+        panel_token=os.environ.get("PANEL_TOKEN", "").strip() or None,
     )

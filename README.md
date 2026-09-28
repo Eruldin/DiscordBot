@@ -39,6 +39,25 @@ Prompt example: *"Dark fantasy RPG community with lore archives, tavern voice ch
 | `/setup-logs <channel>` | Pick the audit channel: deleted/edited messages, joins/leaves, bans, channel changes, mod actions. |
 | `/disable-logs` | Turn logging off. |
 
+## Web control panel
+
+GuildMaster also serves a single-page control panel (FastAPI + uvicorn on the bot's own event loop). Open `http://<host>:<PANEL_PORT>/` and sign in with `PANEL_TOKEN` — or without a token when bound to localhost.
+
+- **Overview** — bot status/latency, server stats, pick the audit-log channel.
+- **AI Scaffold** — write a prompt → preview the generated plan → apply (with optional wipe), watching a live progress bar. Same engine as `/scaffold`, backup included.
+- **Channels** — create text/voice/forum/category, delete, lock/unlock, slowmode, purge.
+- **Moderation** — member list with strike counts; timeout/untimeout/warn/kick/ban.
+- **Backups** — snapshot the layout on demand, rollback to the latest backup (job progress shown live).
+
+```bash
+PANEL_ENABLED=true
+PANEL_HOST=127.0.0.1   # bind 0.0.0.0 only behind a token + firewall/proxy
+PANEL_PORT=8080
+PANEL_TOKEN=           # python -c "import secrets; print(secrets.token_hex(24))"
+```
+
+In Docker, set `PANEL_HOST=0.0.0.0` so the published port works; compose already maps `${PANEL_PORT:-8080}:8080`. The panel shares the bot's connection — no second process, no separate login.
+
 ## Setup
 
 ### 1. Discord Developer Portal

@@ -203,27 +203,18 @@ class Scaffolding(commands.Cog):
 
         return run
 
-    async def _run_queue(self, ops: list[QueuedOp], progress_msg: discord.WebhookMessage, title: str) -> list[QueuedOp]:
+    async def _run_queue(self, ops: list[QueuedOp], title: str, progress=None) -> list[QueuedOp]:
+        """Run ops through the throttled queue.
+
+        ``progress`` is an optional async callable (title, op, done, total)
+        invoked after every operation — Discord embeds and the web panel each
+        wrap it with their own rendering.
+        """
         queue = ChannelOpQueue(min_delay=1.25)
-        last_edit = 0.0
-
-        async def on_progress(op: QueuedOp, done: int, total: int) -> None:
-            nonlocal last_edit
-            if time.monotonic() - last_edit < 1.0 and done < total:
-                return
-            last_edit = time.monotonic()
-            status = "✅" if op.error is None else "❌"
-            embed = discord.Embed(
-                title=title,
-                description=f"[{done}/{total}] {status} {op.label}",
-                color=discord.Color.blurple(),
-            )
-            try:
-                await progress_msg.edit(embed=embed)
-            except discord.HTTPException:
-                pass
-
-        queue.on_progress = on_progress
+        if progress is not None:
+            async def on_progress(op: QueuedOp, done: int, total: int) -> None:
+                await progress(title, op, done, total)
+            queue.on_progress = on_progress
         await queue.start()
         for op in ops:
             await queue.submit(op)
@@ -293,15 +284,86 @@ class Scaffolding(commands.Cog):
         plan.set_footer(text=f"Backup #{backup_id} saved — /layout-rollback restores it")
         progress_msg = await interaction.followup.send(embed=plan)
 
+        protected = self._protected_channel_ids(guild, interaction.channel_id)
+        last_edit = 0.0
+
+        async def progress(title: str, op: QueuedOp, done: int, total: int) -> None:
+            nonlocal last_edit
+            if time.monotonic() - last_edit < 1.0 and done < total:
+                return  # don't spam message edits — Discord rate-limits them
+            last_edit = time.monotonic()
+            status = "✅" if op.error is None else "❌"
+            embed = discord.Embed(
+                title=title,
+                description=f"[{done}/{total}] {status} {op.label}",
+                color=discord.Color.blurple(),
+            )
+            try:
+                await progress_msg.edit(embed=embed)
+            except discord.HTTPException:
+                pass
+
+        created, errors = await self.execute_layout(
+            guild,
+            layout,
+            wipe_existing=wipe_existing,
+            protected_ids=protected,
+            progress=progress,
+        )
+
+        color = discord.Color.green() if not errors else discord.Color.orange()
+        done = discord.Embed(
+            title="Scaffold complete" if not errors else "Scaffold complete (with errors)",
+            color=color,
+            description=(
+                f"**{layout.server_summary[:300]}**\n\n"
+                f"Created {len(created)} item(s). "
+                + (f"{len(errors)} operation(s) failed:\n" + "\n".join(f"• {e}" for e in errors[:10]) if errors else "")
+            ),
+        )
+        done.set_footer(text=f"Not happy? /layout-rollback restores backup #{backup_id}")
+        try:
+            await progress_msg.edit(embed=done)
+        except discord.HTTPException:
+            await interaction.followup.send(embed=done)
+        await self._log(
+            guild,
+            title="Server scaffolded",
+            color=color,
+            fields={
+                "Moderator": str(interaction.user),
+                "Channels created": str(len(created)),
+                "Errors": str(len(errors)),
+                "Backup": f"#{backup_id}",
+            },
+        )
+
+    # ---- execution engine (shared by /scaffold and the web panel) ----
+
+    async def execute_layout(
+        self,
+        guild: discord.Guild,
+        layout,
+        *,
+        wipe_existing: bool = False,
+        protected_ids: Optional[set] = None,
+        progress=None,
+    ) -> tuple[list[str], list[str]]:
+        """Apply a generated layout to a guild: wipe (optional) -> roles -> channels.
+
+        ``protected_ids`` are channel IDs that must never be deleted (the
+        invoking channel, the audit-log channel, community channels). The
+        log channel is always added here. Returns (created_names, errors).
+        """
+        protected = set(protected_ids or set())
+        log_channel_id = await self.bot.db.get_setting(guild.id, "log_channel_id")
+        if log_channel_id:
+            protected.add(int(log_channel_id))
         errors: list[str] = []
         created: list[str] = []
-        protected = self._protected_channel_ids(guild, interaction.channel_id)
 
         # Phase A: wipe
         if wipe_existing:
-            log_channel_id = await self.bot.db.get_setting(guild.id, "log_channel_id")
-            if log_channel_id:
-                protected.add(int(log_channel_id))
             delete_ops = []
             for ch in guild.channels:
                 if ch.id in protected:
@@ -312,7 +374,7 @@ class Scaffolding(commands.Cog):
                         factory=lambda c=ch: c.delete(reason="GuildMaster wipe"),
                     )
                 )
-            results = await self._run_queue(delete_ops, progress_msg, "Wiping existing channels")
+            results = await self._run_queue(delete_ops, "Wiping existing channels", progress)
             errors.extend(f"{op.label}: {op.error}" for op in results if op.error)
 
         # Phase B: roles referenced by the layout that don't exist yet
@@ -333,7 +395,7 @@ class Scaffolding(commands.Cog):
                     )
                 )
         if role_ops:
-            results = await self._run_queue(role_ops, progress_msg, "Creating roles")
+            results = await self._run_queue(role_ops, "Creating roles", progress)
             errors.extend(f"{op.label}: {op.error}" for op in results if op.error)
             await asyncio.sleep(0)  # let guild role cache settle
 
@@ -365,93 +427,30 @@ class Scaffolding(commands.Cog):
                     QueuedOp(label=f"Create `#{cdef.name}`", factory=make_channel)
                 )
 
-        results = await self._run_queue(channel_ops, progress_msg, "Building server layout")
+        results = await self._run_queue(channel_ops, "Building server layout", progress)
         for op in results:
             if op.error:
                 errors.append(f"{op.label}: {op.error}")
-            elif isinstance(op.result, discord.abc.GuildChannel):
-                created.append(op.result.name)
+            elif name := getattr(op.result, "name", None):
+                created.append(name)
+        return created, errors
 
-        color = discord.Color.green() if not errors else discord.Color.orange()
-        done = discord.Embed(
-            title="Scaffold complete" if not errors else "Scaffold complete (with errors)",
-            color=color,
-            description=(
-                f"**{layout.server_summary[:300]}**\n\n"
-                f"Created {len(created)} item(s). "
-                + (f"{len(errors)} operation(s) failed:\n" + "\n".join(f"• {e}" for e in errors[:10]) if errors else "")
-            ),
-        )
-        done.set_footer(text=f"Not happy? /layout-rollback restores backup #{backup_id}")
-        try:
-            await progress_msg.edit(embed=done)
-        except discord.HTTPException:
-            await interaction.followup.send(embed=done)
-        await self._log(
-            guild,
-            title="Server scaffolded",
-            color=color,
-            fields={
-                "Moderator": str(interaction.user),
-                "Channels created": str(len(created)),
-                "Errors": str(len(errors)),
-                "Backup": f"#{backup_id}",
-            },
-        )
-
-    # ---- backups ----
-
-    @app_commands.command(name="layout-backup", description="Snapshot the current channel layout")
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
-    async def layout_backup(self, interaction: discord.Interaction) -> None:
-        snapshot = capture_layout(interaction.guild)
-        backup_id = await self.bot.db.save_layout_backup(interaction.guild.id, snapshot)
-        n_channels = sum(len(c["channels"]) for c in snapshot["categories"]) + len(
-            snapshot["uncategorized"]
-        )
-        await interaction.response.send_message(
-            f"💾 Backup **#{backup_id}** saved — "
-            f"{len(snapshot['categories'])} categories, {n_channels} channels. "
-            "Restore with `/layout-rollback`.",
-            ephemeral=True,
-        )
-
-    @app_commands.command(
-        name="layout-rollback", description="Restore the most recent layout backup"
-    )
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
-    async def layout_rollback(self, interaction: discord.Interaction) -> None:
-        guild = interaction.guild
-        perms = guild.me.guild_permissions
-        if not (perms.manage_channels and perms.manage_roles):
-            await interaction.response.send_message(
-                "I need **Manage Channels** and **Manage Roles** for a rollback.",
-                ephemeral=True,
-            )
-            return
-        backup = await self.bot.db.latest_backup(guild.id)
-        if backup is None:
-            await interaction.response.send_message(
-                "No layout backup exists for this server yet.", ephemeral=True
-            )
-            return
-        await interaction.response.defer(thinking=True)
-        progress_msg = await interaction.followup.send(
-            embed=discord.Embed(
-                title=f"Rolling back to backup #{backup['id']}",
-                description="Reconciling channels…",
-                color=discord.Color.blurple(),
-            )
-        )
-        snapshot = backup["snapshot"]
-        protected = self._protected_channel_ids(guild, interaction.channel_id)
+    async def execute_rollback(
+        self,
+        guild: discord.Guild,
+        snapshot: dict,
+        *,
+        protected_ids: Optional[set] = None,
+        progress=None,
+    ) -> list[QueuedOp]:
+        """Diff a snapshot vs. the live layout and reconcile via the queue:
+        delete channels not in the snapshot, recreate missing ones.
+        Returns the executed ops (check ``op.error`` for failures)."""
+        protected = set(protected_ids or set())
         log_channel_id = await self.bot.db.get_setting(guild.id, "log_channel_id")
         if log_channel_id:
             protected.add(int(log_channel_id))
 
-        # Wanted structure, keyed by (kind, name, parent_name)
         wanted_cats = {c["name"] for c in snapshot["categories"]}
         wanted_channels = {
             (ch["name"], ch["type"], cat["name"])
@@ -527,14 +526,84 @@ class Scaffolding(commands.Cog):
 
                 ops.append(QueuedOp(label=f"Create `#{ch_snap['name']}`", factory=make_ch))
 
-        results = await self._run_queue(ops, progress_msg, f"Restoring backup #{backup['id']}")
+        return await self._run_queue(ops, "Restoring layout", progress)
+
+    # ---- backups ----
+
+    @app_commands.command(name="layout-backup", description="Snapshot the current channel layout")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def layout_backup(self, interaction: discord.Interaction) -> None:
+        snapshot = capture_layout(interaction.guild)
+        backup_id = await self.bot.db.save_layout_backup(interaction.guild.id, snapshot)
+        n_channels = sum(len(c["channels"]) for c in snapshot["categories"]) + len(
+            snapshot["uncategorized"]
+        )
+        await interaction.response.send_message(
+            f"💾 Backup **#{backup_id}** saved — "
+            f"{len(snapshot['categories'])} categories, {n_channels} channels. "
+            "Restore with `/layout-rollback`.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="layout-rollback", description="Restore the most recent layout backup"
+    )
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(administrator=True)
+    async def layout_rollback(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        perms = guild.me.guild_permissions
+        if not (perms.manage_channels and perms.manage_roles):
+            await interaction.response.send_message(
+                "I need **Manage Channels** and **Manage Roles** for a rollback.",
+                ephemeral=True,
+            )
+            return
+        backup = await self.bot.db.latest_backup(guild.id)
+        if backup is None:
+            await interaction.response.send_message(
+                "No layout backup exists for this server yet.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(thinking=True)
+        progress_msg = await interaction.followup.send(
+            embed=discord.Embed(
+                title=f"Rolling back to backup #{backup['id']}",
+                description="Reconciling channels…",
+                color=discord.Color.blurple(),
+            )
+        )
+        snapshot = backup["snapshot"]
+        protected = self._protected_channel_ids(guild, interaction.channel_id)
+        last_edit = 0.0
+
+        async def rollback_progress(title: str, op: QueuedOp, done: int, total: int) -> None:
+            nonlocal last_edit
+            if time.monotonic() - last_edit < 1.0 and done < total:
+                return
+            last_edit = time.monotonic()
+            status = "✅" if op.error is None else "❌"
+            embed = discord.Embed(
+                title=title,
+                description=f"[{done}/{total}] {status} {op.label}",
+                color=discord.Color.blurple(),
+            )
+            try:
+                await progress_msg.edit(embed=embed)
+            except discord.HTTPException:
+                pass
+
+        results = await self.execute_rollback(
+            guild, snapshot, protected_ids=protected, progress=rollback_progress
+        )
         failed = [f"{op.label}: {op.error}" for op in results if op.error]
         embed = discord.Embed(
             title="Rollback complete" if not failed else "Rollback complete (with errors)",
             color=discord.Color.green() if not failed else discord.Color.orange(),
             description=(
                 f"Restored from backup **#{backup['id']}** "
-                f"({len(ops) - len(failed)}/{len(ops)} operations succeeded)."
+                f"({len(results) - len(failed)}/{len(results)} operations succeeded)."
                 + ("\n" + "\n".join(f"• {e}" for e in failed[:10]) if failed else "")
             ),
         )

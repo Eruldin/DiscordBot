@@ -2,6 +2,8 @@ services:
   guildmaster:
     build: .
     env_file: .env
+    ports:
+      - "${PANEL_PORT:-8080}:8080"
     volumes:
       - guildmaster-data:/app/data
     restart: unless-stopped
