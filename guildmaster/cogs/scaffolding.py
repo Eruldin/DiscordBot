@@ -914,6 +914,12 @@ class Scaffolding(commands.Cog):
                                 await ch.set_permissions(role, view_channel=True)
                     if e.make_public:
                         await ch.set_permissions(guild.default_role, overwrite=None)
+                        # clear stale allow-only overwrites left by make_private_for
+                        view_only = discord.Permissions.view_channel.flag
+                        for target, ow in list(ch.overwrites.items()):
+                            allow, deny = ow.pair()
+                            if target != guild.default_role and allow.value == view_only and not deny.value:
+                                await ch.set_permissions(target, overwrite=None)
                     return ch
 
                 ops.append(QueuedOp(label=f"Update `#{e.channel_name}`", factory=update_ch))

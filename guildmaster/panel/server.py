@@ -44,7 +44,7 @@ class ApplyBody(BaseModel):
 
 
 class EditApplyBody(BaseModel):
-    edit: dict
+    edit: LayoutEdit
 
 
 class ChannelCreateBody(BaseModel):
@@ -310,7 +310,7 @@ def create_app(bot: Any, layout_gen: Optional[Any] = None) -> FastAPI:
         perms = guild.me.guild_permissions
         if not perms.manage_channels:
             raise HTTPException(403, "Bot needs Manage Channels")
-        edit = LayoutEdit.model_validate(body.edit)
+        edit = body.edit
         if not edit.operations and not edit.roles:
             raise HTTPException(400, "Edit plan has no operations")
         job_id = uuid.uuid4().hex[:12]

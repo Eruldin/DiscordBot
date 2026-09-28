@@ -14,7 +14,15 @@ from guildmaster.cogs.scaffolding import (
 )
 from guildmaster.models.layout_schema import LayoutEdit
 from guildmaster.panel.server import create_app
-from tests.test_panel import AUTH, GID, make_bot, make_channel, make_guild, make_client
+from tests.test_panel import (
+    AUTH,
+    GID,
+    FakeRole,
+    make_bot,
+    make_channel,
+    make_guild,
+    make_client,
+)
 
 
 def _no_delay(monkeypatch):
@@ -266,3 +274,29 @@ async def test_panel_edit_apply_empty_ops_rejected(db):
             json={"edit": {"summary": "nothing", "operations": []}},
         )
         assert r.status_code == 400
+        # invalid edit payload → 422 (FastAPI validation), not 500
+        r = await c.post(
+            f"/api/guilds/{GID}/edit/apply",
+            headers=AUTH,
+            json={"edit": {"summary": "x", "operations": [{"action": "explode_server"}]}},
+        )
+        assert r.status_code == 422
+
+
+async def test_make_public_clears_stale_role_allows(db, monkeypatch):
+    _no_delay(monkeypatch)
+    guild, cat, ch1, _, _ = _guild_with_channels()
+    vip = FakeRole(name="VIP", id=55, position=5)
+    everyone = guild.default_role
+    ow = discord.PermissionOverwrite(view_channel=True)
+    ch1.overwrites = {everyone: discord.PermissionOverwrite(view_channel=False), vip: ow}
+    cog = Scaffolding(make_bot(db, guild))
+    edit = LayoutEdit(
+        summary="reopen",
+        operations=[{"action": "update_channel", "channel_name": "chat", "make_public": True}],
+    )
+    applied, errors = await cog.execute_edit(guild, edit)
+    assert errors == []
+    calls = ch1.set_permissions.await_args_list
+    assert calls[0].args[0] is everyone and calls[0].kwargs.get("overwrite") is None
+    assert calls[1].args[0] is vip and calls[1].kwargs.get("overwrite") is None

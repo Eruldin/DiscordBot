@@ -387,7 +387,7 @@ async function createBackup() {
 }
 async function rollback() {
   if (!confirm('Restore the latest backup? Channels not in it get deleted.')) return;
-  try { const { job_id } = await api(`/api/guilds/${GUILD_ID}/backups/rollback`, { method: 'POST' }); toast('rollback started'); document.getElementById('scaffold-job-card').style.display = 'block'; showTab('scaffold'); pollJob(job_id); }
+  try { const { job_id } = await api(`/api/guilds/${GUILD_ID}/backups/rollback`, { method: 'POST' }); toast('rollback started'); document.getElementById('job-id').textContent = job_id; document.getElementById('scaffold-job-card').style.display = 'block'; showTab('scaffold'); pollJob(job_id); }
   catch (e) { toast(e.message, true); }
 }
 boot();
