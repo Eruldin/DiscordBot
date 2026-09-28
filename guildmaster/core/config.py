@@ -9,8 +9,11 @@ from typing import Optional
 @dataclass(frozen=True)
 class Settings:
     discord_token: str
-    openai_api_key: str
+    openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
+    llm_provider: str = "openai"  # "openai" | "gemini"
+    gemini_api_key: Optional[str] = None
+    gemini_model: str = "gemini-3.8-flash"
     database_path: str = "data/guildmaster.db"
     sync_guild_id: Optional[int] = None
     log_level: str = "INFO"
@@ -31,9 +34,24 @@ def _required(name: str) -> str:
 
 def load_settings() -> Settings:
     guild_id = os.environ.get("DEV_GUILD_ID", "").strip()
+    provider = os.environ.get("LLM_PROVIDER", "openai").strip().lower() or "openai"
+    openai_key = os.environ.get("OPENAI_API_KEY", "").strip() or None
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip() or None
+    if provider not in ("openai", "gemini"):
+        raise RuntimeError(f"Unknown LLM_PROVIDER {provider!r} — use 'openai' or 'gemini'")
+    if provider == "openai" and not openai_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set (or set LLM_PROVIDER=gemini with GEMINI_API_KEY)"
+        )
+    if provider == "gemini" and not gemini_key:
+        raise RuntimeError("LLM_PROVIDER=gemini but GEMINI_API_KEY is not set")
     return Settings(
         discord_token=_required("DISCORD_BOT_TOKEN"),
-        openai_api_key=_required("OPENAI_API_KEY"),
+        openai_api_key=openai_key,
+        llm_provider=provider,
+        gemini_api_key=gemini_key,
+        gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.8-flash").strip()
+        or "gemini-3.8-flash",
         openai_model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
         database_path=os.environ.get("DATABASE_PATH", "data/guildmaster.db").strip()
         or "data/guildmaster.db",

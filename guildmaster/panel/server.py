@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from guildmaster.cogs.scaffolding import capture_layout
-from guildmaster.core.llm_parser import LayoutGenerationError, LayoutGenerator
+from guildmaster.core.llm_parser import LayoutGenerationError, create_layout_generator
 from guildmaster.models.layout_schema import ServerLayout, sanitize_channel_name
 from guildmaster.utils.duration import format_timedelta, parse_duration
 
@@ -117,21 +117,16 @@ def _serialize_member(m: discord.Member) -> dict:
     }
 
 
-def create_app(bot: Any, layout_gen: Optional[LayoutGenerator] = None) -> FastAPI:
+def create_app(bot: Any, layout_gen: Optional[Any] = None) -> FastAPI:
     app = FastAPI(title="GuildMaster Panel", docs_url=None, redoc_url=None)
     panel_token: Optional[str] = bot.settings.panel_token
     jobs: dict[str, dict] = {}
     _layout_gen = layout_gen
 
-    def layout_generator() -> LayoutGenerator:
+    def layout_generator() -> Any:
         nonlocal _layout_gen
         if _layout_gen is None:
-            from openai import AsyncOpenAI
-
-            _layout_gen = LayoutGenerator(
-                AsyncOpenAI(api_key=bot.settings.openai_api_key),
-                model=bot.settings.openai_model,
-            )
+            _layout_gen = create_layout_generator(bot.settings)
         return _layout_gen
 
     async def auth(

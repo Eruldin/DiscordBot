@@ -1,9 +1,14 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from guildmaster.core.llm_parser import LayoutGenerationError, LayoutGenerator
+from guildmaster.core.llm_parser import (
+    GeminiLayoutGenerator,
+    LayoutGenerationError,
+    LayoutGenerator,
+    create_layout_generator,
+)
 from guildmaster.models.layout_schema import ServerLayout
 
 
@@ -76,3 +81,81 @@ async def test_generate_rejects_empty_categories():
     gen = LayoutGenerator(_client(parse), model="m", max_attempts=1)
     with pytest.raises(LayoutGenerationError):
         await gen.generate("prompt")
+
+
+# ---- Gemini backend ----
+
+
+def _gemini_gen(gen_mock):
+    """GeminiLayoutGenerator with a stubbed google.genai client."""
+    fake_types = SimpleNamespace(GenerateContentConfig=MagicMock())
+    gen = GeminiLayoutGenerator.__new__(GeminiLayoutGenerator)
+    gen._types = fake_types
+    gen.client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=gen_mock)))
+    gen.model = "gemini-test"
+    gen.max_attempts = 2
+    return gen
+
+
+async def test_gemini_returns_parsed_layout():
+    call = AsyncMock(return_value=SimpleNamespace(parsed=VALID_LAYOUT))
+    gen = _gemini_gen(call)
+
+    layout = await gen.generate("a quiet guild")
+    assert layout is VALID_LAYOUT
+    kwargs = call.await_args.kwargs
+    assert kwargs["model"] == "gemini-test"
+    assert "a quiet guild" in kwargs["contents"]
+
+
+async def test_gemini_retries_on_error_then_raises():
+    call = AsyncMock(side_effect=RuntimeError("boom"))
+    gen = _gemini_gen(call)
+    with pytest.raises(LayoutGenerationError):
+        await gen.generate("p")
+    assert call.await_count == 2
+
+
+async def test_gemini_rejects_unparsed():
+    call = AsyncMock(return_value=SimpleNamespace(parsed=None))
+    gen = _gemini_gen(call)
+    with pytest.raises(LayoutGenerationError):
+        await gen.generate("p")
+
+
+def _settings(**kw):
+    base = dict(
+        llm_provider="openai",
+        openai_api_key="k",
+        openai_model="gpt-4o-mini",
+        gemini_api_key=None,
+        gemini_model="gemini-3.8-flash",
+    )
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_factory_openai_default():
+    gen = create_layout_generator(_settings())
+    assert isinstance(gen, LayoutGenerator)
+    assert gen.model == "gpt-4o-mini"
+
+
+def test_factory_gemini():
+    with patch("google.genai.Client") as client_cls:
+        gen = create_layout_generator(
+            _settings(llm_provider="gemini", gemini_api_key="gk")
+        )
+        client_cls.assert_called_once_with(api_key="gk")
+    assert isinstance(gen, GeminiLayoutGenerator)
+    assert gen.model == "gemini-3.8-flash"
+
+
+def test_factory_gemini_requires_key():
+    with pytest.raises(LayoutGenerationError):
+        create_layout_generator(_settings(llm_provider="gemini"))
+
+
+def test_factory_openai_requires_key():
+    with pytest.raises(LayoutGenerationError):
+        create_layout_generator(_settings(openai_api_key=None))

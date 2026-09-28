@@ -73,12 +73,15 @@ https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&permissions=8&scope=b
 
 4. **Role hierarchy:** in Server Settings → Roles, drag the bot's role near the top — above every role it must gate or member it must moderate. Otherwise Discord rejects actions with `403 Forbidden`.
 
-### 2. OpenAI key
-Create a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys) (`OPENAI_API_KEY`). `gpt-4o-mini` is the default model; set `OPENAI_MODEL=gpt-4o` for higher quality.
+### 2. LLM provider (OpenAI or Gemini)
+`/scaffold` and the panel's plan generation use an LLM with structured output. Pick a provider with `LLM_PROVIDER`:
+
+- **OpenAI** (default): `OPENAI_API_KEY` from [platform.openai.com/api-keys](https://platform.openai.com/api-keys); `OPENAI_MODEL=gpt-4o-mini` (set `gpt-4o` for higher quality).
+- **Gemini**: `LLM_PROVIDER=gemini`, `GEMINI_API_KEY` from [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey); `GEMINI_MODEL=gemini-3.8-flash`. Free-tier keys may hit 429/503 quota errors — the generator retries with backoff, but a billed project is more reliable.
 
 ### 3. Configure
 ```bash
-cp .env.example .env   # fill in DISCORD_BOT_TOKEN and OPENAI_API_KEY
+cp .env.example .env   # fill in DISCORD_BOT_TOKEN and the LLM key you chose
 ```
 
 Set `DEV_GUILD_ID` to your test server's ID while developing — slash commands sync to it instantly (global sync takes up to an hour).

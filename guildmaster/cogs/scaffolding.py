@@ -9,9 +9,12 @@ from typing import Any, Optional
 import discord
 from discord import app_commands
 from discord.ext import commands
-from openai import AsyncOpenAI
 
-from guildmaster.core.llm_parser import LayoutGenerationError, LayoutGenerator
+from guildmaster.core.llm_parser import (
+    LayoutGenerationError,
+    LayoutGenerator,
+    create_layout_generator,
+)
 from guildmaster.models.layout_schema import ChannelDefinition
 from guildmaster.utils.rate_limit import ChannelOpQueue, QueuedOp
 
@@ -156,12 +159,9 @@ class Scaffolding(commands.Cog):
         self._layout_gen = layout_gen
 
     @property
-    def layout_gen(self) -> LayoutGenerator:
+    def layout_gen(self):
         if self._layout_gen is None:
-            self._layout_gen = LayoutGenerator(
-                AsyncOpenAI(api_key=self.bot.settings.openai_api_key),
-                model=self.bot.settings.openai_model,
-            )
+            self._layout_gen = create_layout_generator(self.bot.settings)
         return self._layout_gen
 
     # ---- helpers ----
