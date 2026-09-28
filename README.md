@@ -105,6 +105,11 @@ pytest
 
 Layout snapshots, strikes, and settings live in a SQLite file (`DATABASE_PATH`, default `data/guildmaster.db`; a Docker volume in compose).
 
+## Legal
+
+- [Terms of Service](TERMS_OF_SERVICE.md)
+- [Privacy Policy](PRIVACY_POLICY.md)
+
 ## Safety notes
 
 - `/scaffold` always saves a backup before touching anything; `/layout-rollback` restores the latest one. It never deletes the log channel or the channel the command was run in.
